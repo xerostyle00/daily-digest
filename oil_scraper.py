@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import html
+import io
 import json
 import os
 import sqlite3
@@ -21,10 +22,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-import requests
-import yfinance as yf
+import matplotlib
+matplotlib.use("Agg")  # 헤드리스 렌더링 (GH Actions 환경)
+import matplotlib.pyplot as plt  # noqa: E402
+import requests  # noqa: E402
+import yfinance as yf  # noqa: E402
 
-from mailer import send_html_email
+from mailer import send_html_email  # noqa: E402
+from notifier import send_telegram_message  # noqa: E402
 
 # Windows 콘솔 한글/이모지 출력을 위한 UTF-8 재설정
 if hasattr(sys.stdout, "reconfigure"):
@@ -35,6 +40,10 @@ KST = timezone(timedelta(hours=9))
 OUTPUT_DIR = Path(__file__).parent / "output"
 DB_PATH = OUTPUT_DIR / "OIL_history.db"
 REPORT_PATH = OUTPUT_DIR / "OIL_report.html"
+# GitHub Pages 호스팅용 사본 (output/public/oil/index.html → /daily-digest/oil/)
+PUBLIC_REPORT_PATH = OUTPUT_DIR / "public" / "oil" / "index.html"
+PUBLIC_REPORT_URL = "https://xerostyle00.github.io/daily-digest/oil/"
+CHART_IMAGE_CID = "chart_combined"
 NEWS_QUERY = "국제유가"
 NEWS_LIMIT = 10
 CHART_DAYS = 30
@@ -666,12 +675,17 @@ def summarize_news_with_gemini(news: list[dict]) -> list[str] | None:
     titles = "\n".join(f"- {n['title']}" for n in news)
     prompt = (
         "다음은 오늘 수집된 국제유가 관련 한국어 뉴스 제목 목록입니다.\n"
-        "전체를 종합해 시장에 가장 중요한 핵심 메시지 3가지를 한국어 불릿로 요약하세요.\n\n"
+        "전체를 종합해 시장에 가장 중요한 핵심 메시지 3가지를 정보가 충분한 한국어 불릿로 요약하세요.\n\n"
         "규칙:\n"
         "- 정확히 3줄\n"
-        "- 각 줄은 한 문장, 50자 내외로 간결하게\n"
+        "- 각 줄은 한 문장으로 작성하되, 60~120자 분량으로 충분한 내용을 담을 것\n"
+        "- 단순 키워드 나열 금지 — 무엇이 일어났고 시장에 어떤 영향을 줬는지 인과를 한 문장에 담을 것\n"
+        "- 가능하면 구체적 숫자·가격대·종목명 포함 "
+        "(예: 'WTI 100달러 돌파', '에쓰오일 8% 상승')\n"
         "- 제목에 명시된 사실만 사용. 추측·과장 금지\n"
-        "- 동일 사건이 여러 번 나오면 하나로 묶기\n"
+        "- 동일 사건이 여러 번 나오면 하나로 묶되 가장 정보량이 많은 형태로 표현\n"
+        "- 문체: 각 문장을 명사형 어미 '~임/~함/~됨'으로 종결 "
+        "(예: '재돌파임', '강세 보임', '확대됨'). 평서형 '~했다', '~한다' 지양\n"
         '- 출력은 "- " 로 시작하는 불릿만, 다른 설명 텍스트 금지\n\n'
         f"뉴스 제목:\n{titles}"
     )
@@ -742,76 +756,72 @@ def _stats_from_chart(chart: dict) -> dict[str, dict]:
     return out
 
 
-def render_combined_chart_svg(chart: dict, width: int = 820, height: int = 260) -> str:
-    """30일 통합 추이 — 종목별 base=100 정규화. 변동폭이 다른 종목을 한 차트에 비교."""
-    pad_l, pad_r, pad_t, pad_b = 44, 16, 14, 30
-    inner_w = width - pad_l - pad_r
-    inner_h = height - pad_t - pad_b
+CHART_Y_MIN = 50.0
+CHART_Y_MAX = 150.0
 
-    normalized: dict[str, list[tuple[str, float]]] = {}
-    max_dates: list[str] = []
+
+def _chart_eligible_labels(chart: dict) -> list[str]:
+    """차트 Y범위 [CHART_Y_MIN, CHART_Y_MAX] 안에 들어오는 종목만 반환 (median 기준).
+
+    가격대가 다른 종목(예: 천연가스 ~$3)을 한 차트에 그리면 평선처럼 보이므로 제외.
+    """
+    out: list[str] = []
     for label, series in chart.items():
         if len(series) < 2 or not series[0]["close"]:
             continue
-        base = series[0]["close"]
-        normalized[label] = [(p["date"], p["close"] / base * 100) for p in series]
-        if len(series) > len(max_dates):
-            max_dates = [p["date"] for p in series]
+        closes = sorted(p["close"] for p in series)
+        median = closes[len(closes) // 2]
+        if CHART_Y_MIN - 10 <= median <= CHART_Y_MAX + 10:
+            out.append(label)
+    return out
 
-    if not normalized:
-        return ""
 
-    all_vals = [v for s in normalized.values() for _, v in s]
-    vmin, vmax = min(all_vals), max(all_vals)
-    margin = max((vmax - vmin) * 0.08, 1.0)
-    vmin -= margin
-    vmax += margin
+def render_combined_chart_png(chart: dict) -> bytes:
+    """30일 추이 PNG (실제 종가, Y축 $50~$150 고정). 데이터 부족 시 빈 bytes."""
+    labels = _chart_eligible_labels(chart)
+    if not labels:
+        return b""
 
-    parts: list[str] = []
+    series_any = chart[labels[0]]
+    max_dates = [p["date"] for p in series_any]
+    for label in labels[1:]:
+        if len(chart[label]) > len(max_dates):
+            max_dates = [p["date"] for p in chart[label]]
 
-    for i in range(5):
-        v = vmin + (vmax - vmin) * i / 4
-        y = pad_t + inner_h - ((v - vmin) / (vmax - vmin)) * inner_h
-        parts.append(
-            f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + inner_w}" y2="{y:.1f}" '
-            f'stroke="#eee" stroke-width="1"/>'
-        )
-        parts.append(
-            f'<text x="{pad_l - 6}" y="{y + 3.5:.1f}" fill="#999" font-size="10" '
-            f'text-anchor="end" font-family="sans-serif">{v:.0f}</text>'
-        )
+    fig, ax = plt.subplots(figsize=(8.2, 2.6), dpi=140)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    for label in labels:
+        series = chart[label]
+        x = list(range(len(series)))
+        y = [p["close"] for p in series]
+        # 한국어 라벨은 PNG 안에 넣지 않음 (HTML 범례에서 표시).
+        ax.plot(x, y, color=TICKER_COLORS.get(label, "#666"),
+                linewidth=2.0, solid_capstyle="round")
+
+    ax.set_ylim(CHART_Y_MIN, CHART_Y_MAX)
+    ax.set_yticks([CHART_Y_MIN, 75, 100, 125, CHART_Y_MAX])
 
     n_points = len(max_dates)
     if n_points > 1:
-        step = max(1, (n_points - 1) // 5)
-        for i in range(0, n_points, step):
-            x = pad_l + (i / (n_points - 1)) * inner_w
-            mmdd = max_dates[i][5:]
-            parts.append(
-                f'<text x="{x:.1f}" y="{pad_t + inner_h + 14}" fill="#999" font-size="10" '
-                f'text-anchor="middle" font-family="sans-serif">{mmdd}</text>'
-            )
+        step = max(1, (n_points - 1) // 6)
+        ticks = list(range(0, n_points, step))
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([max_dates[i][5:] for i in ticks], fontsize=8)
 
-    for label, series in normalized.items():
-        color = TICKER_COLORS.get(label, "#666")
-        n = len(series)
-        points = []
-        for j, (_, v) in enumerate(series):
-            x = pad_l + (j / (n - 1)) * inner_w
-            y = pad_t + inner_h - ((v - vmin) / (vmax - vmin)) * inner_h
-            points.append(f"{x:.1f},{y:.1f}")
-        parts.append(
-            f'<path d="M{" L".join(points)}" fill="none" stroke="{color}" '
-            f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
-        )
+    ax.tick_params(axis="y", labelsize=8)
+    ax.grid(True, alpha=0.3, linewidth=0.5)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    for spine in ("left", "bottom"):
+        ax.spines[spine].set_color("#ccc")
+    fig.tight_layout(pad=0.6)
 
-    return (
-        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg" '
-        f'viewBox="0 0 {width} {height}" '
-        f'style="display:block;max-width:100%;height:auto">'
-        f'{"".join(parts)}'
-        "</svg>"
-    )
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor="white")
+    plt.close(fig)
+    return buf.getvalue()
 
 
 def render_chart_legend(labels: list[str]) -> str:
@@ -827,14 +837,19 @@ def render_chart_legend(labels: list[str]) -> str:
         '<div style="margin:12px 0 4px 0">'
         f"{items}"
         '<span style="color:#999;font-size:11px;margin-left:8px">'
-        "(시작일 = 100 기준 정규화)</span>"
+        "(일별 종가, $)</span>"
         "</div>"
     )
 
 
 def render_email_html(latest: list[dict], news: list[dict], chart: dict,
-                      summary: list[str] | None = None) -> str:
-    """이메일 클라이언트 호환 HTML (인라인 스타일, 표 기반, JS 없음)."""
+                      summary: list[str] | None = None,
+                      *, has_chart_image: bool = False) -> str:
+    """이메일 클라이언트 호환 HTML (인라인 스타일, 표 기반, JS 없음).
+
+    has_chart_image=True 일 때 차트는 <img src="cid:..."> 로 참조 (PNG 인라인 첨부).
+    False 면 차트 섹션 자체를 생략.
+    """
     today = datetime.now(KST).strftime("%Y-%m-%d (%a)")
     stats = _stats_from_chart(chart)
 
@@ -867,19 +882,19 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
                 avg_cell = max_cell = min_cell = range_cell = dash
             rows.append(
                 "<tr>"
-                f"<td style='padding:8px 10px'>{html.escape(r['label'])}"
+                f"<td style='padding:8px 10px;text-align:center'>{html.escape(r['label'])}"
                 f" <span style='color:#888;font-size:12px'>({html.escape(r['ticker'])})</span></td>"
-                f"<td style='padding:8px 10px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums'>"
+                f"<td style='padding:8px 10px;text-align:center;font-weight:600;font-variant-numeric:tabular-nums'>"
                 f"{r['close']:,.2f}</td>"
-                f"<td style='padding:8px 10px;text-align:right;color:{color};font-variant-numeric:tabular-nums'>"
+                f"<td style='padding:8px 10px;text-align:center;color:{color};font-variant-numeric:tabular-nums'>"
                 f"{arrow} {r['change']:+.2f} ({r['change_pct']:+.2f}%)</td>"
-                f"<td style='padding:8px 10px;text-align:right;font-variant-numeric:tabular-nums'>"
+                f"<td style='padding:8px 10px;text-align:center;font-variant-numeric:tabular-nums'>"
                 f"{avg_cell}</td>"
-                f"<td style='padding:8px 10px;text-align:right;color:#ef5350;font-variant-numeric:tabular-nums'>"
+                f"<td style='padding:8px 10px;text-align:center;color:#ef5350;font-variant-numeric:tabular-nums'>"
                 f"{max_cell}</td>"
-                f"<td style='padding:8px 10px;text-align:right;color:#42a5f5;font-variant-numeric:tabular-nums'>"
+                f"<td style='padding:8px 10px;text-align:center;color:#42a5f5;font-variant-numeric:tabular-nums'>"
                 f"{min_cell}</td>"
-                f"<td style='padding:8px 10px;text-align:right;color:#9c27b0;font-variant-numeric:tabular-nums'>"
+                f"<td style='padding:8px 10px;text-align:center;color:#9c27b0;font-variant-numeric:tabular-nums'>"
                 f"{range_cell}</td>"
                 "</tr>"
             )
@@ -887,20 +902,20 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
             "<table style='border-collapse:collapse;width:100%;border:1px solid #ddd;font-size:14px'>"
             "<thead style='background:#f8f9fa'>"
             "<tr>"
-            "<th rowspan='2' style='padding:8px 10px;text-align:left;border-bottom:1px solid #ddd'>종목</th>"
-            "<th rowspan='2' style='padding:8px 10px;text-align:right;border-bottom:1px solid #ddd'>현재가</th>"
-            "<th rowspan='2' style='padding:8px 10px;text-align:right;border-bottom:1px solid #ddd'>전일 대비</th>"
-            f"<th rowspan='2' style='padding:8px 10px;text-align:right;border-bottom:1px solid #ddd'>"
+            "<th rowspan='2' style='padding:8px 10px;text-align:center;border-bottom:1px solid #ddd'>종목</th>"
+            "<th rowspan='2' style='padding:8px 10px;text-align:center;border-bottom:1px solid #ddd'>현재가</th>"
+            "<th rowspan='2' style='padding:8px 10px;text-align:center;border-bottom:1px solid #ddd'>전일 대비</th>"
+            f"<th rowspan='2' style='padding:8px 10px;text-align:center;border-bottom:1px solid #ddd'>"
             f"{CHART_DAYS}일 평균</th>"
             f"<th colspan='3' style='padding:8px 10px;text-align:center;border-bottom:1px solid #eee'>"
             f"{CHART_DAYS}일 변동폭</th>"
             "</tr>"
             "<tr>"
-            "<th style='padding:6px 10px;text-align:right;font-weight:500;font-size:12px;color:#666;"
+            "<th style='padding:6px 10px;text-align:center;font-weight:500;font-size:12px;color:#666;"
             "border-bottom:1px solid #ddd'>최고</th>"
-            "<th style='padding:6px 10px;text-align:right;font-weight:500;font-size:12px;color:#666;"
+            "<th style='padding:6px 10px;text-align:center;font-weight:500;font-size:12px;color:#666;"
             "border-bottom:1px solid #ddd'>최저</th>"
-            "<th style='padding:6px 10px;text-align:right;font-weight:500;font-size:12px;color:#666;"
+            "<th style='padding:6px 10px;text-align:center;font-weight:500;font-size:12px;color:#666;"
             "border-bottom:1px solid #ddd'>%</th>"
             "</tr>"
             "</thead>"
@@ -930,16 +945,26 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
             f"<tbody>{news_rows}</tbody></table>"
         )
 
-    combined_svg = render_combined_chart_svg(chart)
-    if combined_svg:
+    if has_chart_image:
         chart_section = (
             f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>"
             f"{CHART_DAYS}일 추이 (통합)</h2>"
-            f"{render_chart_legend(list(chart.keys()))}"
-            f"{combined_svg}"
+            f"{render_chart_legend(_chart_eligible_labels(chart))}"
+            f'<img src="cid:{CHART_IMAGE_CID}" alt="{CHART_DAYS}일 통합 추이" '
+            f'style="display:block;max-width:100%;height:auto;border:1px solid #eee;'
+            f'border-radius:4px">'
         )
     else:
         chart_section = ""
+
+    link_section = (
+        "<div style='margin-top:32px;padding:14px 16px;background:#f8f9fa;"
+        "border-radius:6px;text-align:center'>"
+        f"<a href='{PUBLIC_REPORT_URL}' "
+        "style='color:#1a73e8;text-decoration:none;font-size:14px;font-weight:500'>"
+        "🔗 전체 리포트 보기 (인터랙티브 차트 + 월별 통계)</a>"
+        "</div>"
+    )
 
     return (
         "<!doctype html><html><body style=\"font-family:-apple-system,"
@@ -953,10 +978,50 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
         f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>📰 관련 뉴스 (검색어: {NEWS_QUERY})</h2>"
         f"{render_summary_block(summary)}"
         f"{news_section}"
-        "<p style='margin-top:32px;color:#999;font-size:12px'>"
+        f"{link_section}"
+        "<p style='margin-top:24px;color:#999;font-size:12px;text-align:center'>"
         "데이터: yfinance · Google News RSS · 자동 발송</p>"
         "</body></html>"
     )
+
+
+def render_telegram_message(latest: list[dict], summary: list[str] | None,
+                            chart: dict, ref_date: str, today_str: str) -> str:
+    """Telegram HTML 메시지: 제목 + 시세 요약 + AI 요약 불릿 + 리포트 링크."""
+    stats = _stats_from_chart(chart)
+
+    parts = [f"📈 <b>[일일 유가] WTI/Brent/천연가스 — {today_str}</b>", ""]
+
+    if latest:
+        ref_str = f" <i>(기준일: {html.escape(ref_date)})</i>" if ref_date else ""
+        parts.append(f"💹 <b>시세</b>{ref_str}")
+        for r in latest:
+            arrow = "▲" if r["change"] > 0 else "▼" if r["change"] < 0 else "─"
+            avg_val = stats.get(r["label"], {}).get("avg")
+            avg_str = f" | 30일 평균 {avg_val:,.2f}" if avg_val is not None else ""
+            parts.append(
+                f"• <b>{html.escape(r['label'])}</b>: {r['close']:,.2f} "
+                f"{arrow} {r['change']:+.2f} ({r['change_pct']:+.2f}%){avg_str}"
+            )
+    else:
+        parts.append("💹 시세: 데이터 없음")
+
+    if summary:
+        parts.extend(["", "📰 <b>오늘의 핵심 메시지</b>"])
+        for s in summary:
+            parts.append(f"• {html.escape(s)}")
+
+    parts.extend([
+        "",
+        f'🔗 <a href="{PUBLIC_REPORT_URL}">전체 리포트 보기</a>',
+    ])
+    return "\n".join(parts)
+
+
+def _should_send_telegram() -> bool:
+    if "--telegram" in sys.argv:
+        return True
+    return os.environ.get("SEND_TELEGRAM", "").strip().lower() in ("1", "true", "yes")
 
 
 def _should_send_email() -> bool:
@@ -1042,11 +1107,16 @@ def main() -> int:
             print(f"[오류] 월간 CSV 내보내기 실패: {e}", file=sys.stderr)
             prices_csv = news_csv = None
 
-        # HTML 리포트 생성 (DB 전체 히스토리 기준)
+        # HTML 리포트 생성 (DB 전체 히스토리 기준).
+        # 같은 내용을 GitHub Pages 호스팅 경로에도 복사 — Telegram/이메일 링크 대상.
         try:
-            REPORT_PATH.write_text(render_html(conn), encoding="utf-8")
+            report_html = render_html(conn)
+            REPORT_PATH.write_text(report_html, encoding="utf-8")
+            PUBLIC_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            PUBLIC_REPORT_PATH.write_text(report_html, encoding="utf-8")
             print("\n" + "=" * 60)
             print(f"📄 리포트:   {REPORT_PATH}")
+            print(f"🌐 공개본:   {PUBLIC_REPORT_PATH}")
             print(f"💾 DB:       {DB_PATH}")
             if prices_csv and news_csv:
                 print(f"📊 월간 CSV: {prices_csv.name}, {news_csv.name}")
@@ -1055,25 +1125,50 @@ def main() -> int:
             print(f"[오류] HTML 생성 실패: {e}", file=sys.stderr)
             return 1
 
+        # 발송 공통 데이터 (이메일·텔레그램이 같은 스냅샷 사용)
+        latest = load_latest_prices(conn)
+        chart = load_history_for_chart(conn, CHART_DAYS)
+        recent_news = load_recent_news(conn, NEWS_LIMIT)
+        summary = summarize_news_with_gemini(recent_news)
+        today = datetime.now(KST).strftime("%Y-%m-%d")
+        ref_date = max((r["date"] for r in latest if r.get("date")), default="")
+
         if _should_send_email():
             try:
-                latest = load_latest_prices(conn)
-                chart = load_history_for_chart(conn, CHART_DAYS)
-                recent_news = load_recent_news(conn, NEWS_LIMIT)
-                summary = summarize_news_with_gemini(recent_news)
-                today = datetime.now(KST).strftime("%Y-%m-%d")
-                subject = f"[일일 유가] WTI/Brent/천연가스 — {today}"
-                send_html_email(
-                    subject,
-                    render_email_html(latest, recent_news, chart, summary),
+                chart_png = render_combined_chart_png(chart)
+                inline = {CHART_IMAGE_CID: chart_png} if chart_png else None
+                html_body = render_email_html(
+                    latest, recent_news, chart, summary,
+                    has_chart_image=bool(chart_png),
                 )
-                print("📧 이메일 발송 완료" + (" (AI 요약 포함)" if summary else ""))
+                send_html_email(
+                    f"[일일 유가] WTI/Brent/천연가스 — {today}",
+                    html_body,
+                    inline_images=inline,
+                )
+                print("📧 이메일 발송 완료"
+                      + (" (AI 요약 포함)" if summary else "")
+                      + (" + 차트 PNG" if chart_png else ""))
             except KeyError as e:
                 print(f"[오류] 환경변수 누락: {e} (GMAIL_USER, GMAIL_APP_PASSWORD 필요)",
                       file=sys.stderr)
                 return 1
             except Exception as e:
                 print(f"[오류] 이메일 발송 실패: {e}", file=sys.stderr)
+                return 1
+
+        if _should_send_telegram():
+            try:
+                msg = render_telegram_message(latest, summary, chart, ref_date, today)
+                send_telegram_message(msg)
+                print("💬 텔레그램 발송 완료")
+            except KeyError as e:
+                print(f"[오류] 환경변수 누락: {e} "
+                      "(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID 필요)",
+                      file=sys.stderr)
+                return 1
+            except Exception as e:
+                print(f"[오류] 텔레그램 발송 실패: {e}", file=sys.stderr)
                 return 1
 
         return 0 if (prices or news) else 1

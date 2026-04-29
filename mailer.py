@@ -7,12 +7,14 @@
   RECIPIENT_BCC       (선택) 동일 형식. SMTP envelope 으로만 전달, 메시지 헤더엔 미포함.
 
 발신자 표시명은 기본 'XEROS'. 필요 시 호출 시점에 sender_name 파라미터로 오버라이드.
+inline_images={'cid': bytes} 로 PNG 인라인 첨부 가능 (HTML 에서 <img src="cid:cid"> 로 참조).
 """
 
 from __future__ import annotations
 
 import os
 import smtplib
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -32,18 +34,32 @@ def parse_recipients(raw: str) -> list[str]:
 
 
 def send_html_email(subject: str, html_body: str, *,
-                    sender_name: str = DEFAULT_SENDER_NAME) -> None:
-    """Gmail SMTP 로 HTML 이메일 발송. 다중 수신자 + BCC 지원."""
+                    sender_name: str = DEFAULT_SENDER_NAME,
+                    inline_images: dict[str, bytes] | None = None) -> None:
+    """Gmail SMTP 로 HTML 이메일 발송. 다중 수신자 + BCC + 인라인 이미지 지원."""
     user = os.environ["GMAIL_USER"]
     password = os.environ["GMAIL_APP_PASSWORD"]
     to_list = parse_recipients(os.environ.get("RECIPIENT_EMAIL", "")) or [user]
     bcc_list = parse_recipients(os.environ.get("RECIPIENT_BCC", ""))
 
-    msg = MIMEMultipart("alternative")
+    if inline_images:
+        # multipart/related → multipart/alternative(html) + inline images
+        msg = MIMEMultipart("related")
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(alt)
+        for cid, png_bytes in inline_images.items():
+            img = MIMEImage(png_bytes, _subtype="png")
+            img.add_header("Content-ID", f"<{cid}>")
+            img.add_header("Content-Disposition", "inline", filename=f"{cid}.png")
+            msg.attach(img)
+    else:
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
     msg["Subject"] = subject
     msg["From"] = formataddr((sender_name, user))
     msg["To"] = ", ".join(to_list)
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as smtp:
         smtp.login(user, password)
