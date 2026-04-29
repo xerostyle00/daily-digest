@@ -1,0 +1,19 @@
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude Code 로컬 설정
+.claude/
+
+# 프로그램이 생성하는 결과물 (DB, CSV, HTML 리포트)
+# 실행할 때마다 바뀌므로 git 으로 추적하지 않습니다.
+# 결과물도 추적하고 싶다면 이 줄을 제거하세요.
+output/
+
+# 운영체제/에디터 임시 파일
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

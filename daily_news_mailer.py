@@ -1,0 +1,171 @@
+"""Daily AI / GPU news mailer.
+
+Pulls recent articles from Google News RSS for predefined queries,
+renders an HTML digest, and sends it via Gmail SMTP.
+Run on GitHub Actions every morning at 10:00 KST.
+"""
+
+from __future__ import annotations
+
+import html
+import os
+import smtplib
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from itertools import groupby
+from urllib.parse import quote_plus
+
+import feedparser
+
+KST = timezone(timedelta(hours=9))
+LOOKBACK_HOURS = 24
+
+QUERIES: list[tuple[str, str]] = [
+    ("AI", '"Claude" OR "Anthropic"'),
+    ("AI", '"Gemini" Google'),
+    ("AI", '"Grok" xAI'),
+    ("AI", '"ChatGPT" OR "OpenAI" OR "GPT-5"'),
+    ("GPU", '"NVIDIA" (출시 OR release OR launch OR 발표)'),
+    ("GPU", '"RTX" (출시 OR release OR launch)'),
+]
+
+
+@dataclass
+class Article:
+    category: str
+    title: str
+    url: str
+    source: str
+    published: datetime
+
+
+def _rss_url(query: str) -> str:
+    return (
+        f"https://news.google.com/rss/search?q={quote_plus(query)}"
+        "&hl=ko&gl=KR&ceid=KR:ko"
+    )
+
+
+def _extract_source(entry) -> str:
+    src = entry.get("source")
+    if not src:
+        return ""
+    if hasattr(src, "title") and src.title:
+        return src.title
+    if isinstance(src, dict):
+        return src.get("title", "") or ""
+    if isinstance(src, str):
+        return src
+    return ""
+
+
+def fetch_articles() -> list[Article]:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
+    seen_titles: set[str] = set()
+    out: list[Article] = []
+
+    for category, query in QUERIES:
+        feed = feedparser.parse(_rss_url(query))
+        for entry in feed.entries:
+            link = entry.get("link", "")
+            title = entry.get("title", "").strip()
+            if not link or not title:
+                continue
+            dedup_key = title.lower()
+            if dedup_key in seen_titles:
+                continue
+
+            published_struct = entry.get("published_parsed")
+            if not published_struct:
+                continue
+            published = datetime(*published_struct[:6], tzinfo=timezone.utc)
+            if published < cutoff:
+                continue
+
+            seen_titles.add(dedup_key)
+            out.append(
+                Article(
+                    category=category,
+                    title=title,
+                    url=link,
+                    source=_extract_source(entry),
+                    published=published.astimezone(KST),
+                )
+            )
+
+    out.sort(key=lambda a: (a.category, -a.published.timestamp()))
+    return out
+
+
+def render_html(articles: list[Article]) -> str:
+    today = datetime.now(KST).strftime("%Y-%m-%d (%a)")
+
+    if not articles:
+        body = "<p style='color:#666'>지난 24시간 동안 새로운 기사가 없습니다.</p>"
+    else:
+        sections = []
+        for category, group in groupby(articles, key=lambda a: a.category):
+            rows = "".join(
+                "<tr>"
+                f"<td style='padding:6px 10px;white-space:nowrap;color:#666'>{a.published.strftime('%m-%d %H:%M')}</td>"
+                f"<td style='padding:6px 10px'><a href=\"{html.escape(a.url, quote=True)}\" "
+                f"style='color:#1a73e8;text-decoration:none'>{html.escape(a.title)}</a></td>"
+                f"<td style='padding:6px 10px;color:#444'>{html.escape(a.source)}</td>"
+                "</tr>"
+                for a in group
+            )
+            sections.append(
+                f"<h2 style='margin-top:24px;color:#202124'>{html.escape(category)} 뉴스</h2>"
+                "<table style='border-collapse:collapse;width:100%;"
+                "border:1px solid #ddd;font-size:14px'>"
+                "<thead style='background:#f8f9fa;text-align:left'>"
+                "<tr><th style='padding:8px 10px'>발행</th>"
+                "<th style='padding:8px 10px'>제목</th>"
+                "<th style='padding:8px 10px'>출처</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table>"
+            )
+        body = "\n".join(sections)
+
+    return (
+        "<!doctype html><html><body style=\"font-family:-apple-system,"
+        "BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:900px;margin:0 auto;"
+        "padding:16px;color:#202124\">"
+        f"<h1 style='border-bottom:2px solid #1a73e8;padding-bottom:8px'>"
+        f"일일 AI / GPU 뉴스 — {today}</h1>"
+        f"{body}"
+        "<p style='margin-top:32px;color:#999;font-size:12px'>"
+        "Google News RSS · 최근 24시간 · 자동 발송</p>"
+        "</body></html>"
+    )
+
+
+def send_email(html_body: str) -> None:
+    user = os.environ["GMAIL_USER"]
+    password = os.environ["GMAIL_APP_PASSWORD"]
+    recipient = os.environ.get("RECIPIENT_EMAIL", user)
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"[일일 뉴스] AI / GPU — {today}"
+    msg["From"] = user
+    msg["To"] = recipient
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(user, password)
+        smtp.send_message(msg)
+
+
+def main() -> int:
+    articles = fetch_articles()
+    print(f"Fetched {len(articles)} articles", file=sys.stderr)
+    send_email(render_html(articles))
+    print("Email sent.", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

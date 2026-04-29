@@ -1,0 +1,27 @@
+name: Daily AI/GPU News Mailer
+
+on:
+  schedule:
+    # 10:00 KST = 01:00 UTC. GitHub Actions cron is in UTC and may
+    # run a few minutes late during peak hours.
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install feedparser
+
+      - run: python daily_news_mailer.py
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
