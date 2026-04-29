@@ -8,17 +8,15 @@ Run on GitHub Actions every morning at 10:00 KST.
 from __future__ import annotations
 
 import html
-import os
-import smtplib
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from itertools import groupby
 from urllib.parse import quote_plus
 
 import feedparser
+
+from mailer import send_html_email
 
 KST = timezone(timedelta(hours=9))
 LOOKBACK_HOURS = 24
@@ -142,27 +140,11 @@ def render_html(articles: list[Article]) -> str:
     )
 
 
-def send_email(html_body: str) -> None:
-    user = os.environ["GMAIL_USER"]
-    password = os.environ["GMAIL_APP_PASSWORD"]
-    recipient = os.environ.get("RECIPIENT_EMAIL", user)
-    today = datetime.now(KST).strftime("%Y-%m-%d")
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[일일 뉴스] AI / GPU — {today}"
-    msg["From"] = user
-    msg["To"] = recipient
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(user, password)
-        smtp.send_message(msg)
-
-
 def main() -> int:
     articles = fetch_articles()
     print(f"Fetched {len(articles)} articles", file=sys.stderr)
-    send_email(render_html(articles))
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    send_html_email(f"[일일 뉴스] AI / GPU — {today}", render_html(articles))
     print("Email sent.", file=sys.stderr)
     return 0
 

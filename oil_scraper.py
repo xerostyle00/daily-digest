@@ -14,19 +14,17 @@ import csv
 import html
 import json
 import os
-import smtplib
 import sqlite3
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.utils import formataddr
 from pathlib import Path
 from urllib.parse import quote
 
 import requests
 import yfinance as yf
+
+from mailer import send_html_email
 
 # Windows 콘솔 한글/이모지 출력을 위한 UTF-8 재설정
 if hasattr(sys.stdout, "reconfigure"):
@@ -54,7 +52,6 @@ TICKER_COLORS = {
     "Brent 원유": "#42a5f5",
     "천연가스": "#ffb74d",
 }
-SENDER_NAME = "XEROS"
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -955,36 +952,6 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
     )
 
 
-def _parse_recipients(raw: str) -> list[str]:
-    """콤마/세미콜론/줄바꿈 구분 문자열 → 빈값 제거된 주소 리스트."""
-    return [
-        addr.strip()
-        for addr in raw.replace(";", ",").replace("\n", ",").split(",")
-        if addr.strip()
-    ]
-
-
-def send_email(html_body: str) -> None:
-    user = os.environ["GMAIL_USER"]
-    password = os.environ["GMAIL_APP_PASSWORD"]
-    to_list = _parse_recipients(os.environ.get("RECIPIENT_EMAIL", "")) or [user]
-    bcc_list = _parse_recipients(os.environ.get("RECIPIENT_BCC", ""))
-    today = datetime.now(KST).strftime("%Y-%m-%d")
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[일일 유가] WTI/Brent/천연가스 — {today}"
-    msg["From"] = formataddr((SENDER_NAME, user))
-    msg["To"] = ", ".join(to_list)
-    if bcc_list:
-        # BCC 헤더는 메시지에 포함하지 않고 SMTP envelope 으로만 전달
-        pass
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(user, password)
-        smtp.send_message(msg, to_addrs=to_list + bcc_list)
-
-
 def _should_send_email() -> bool:
     if "--email" in sys.argv:
         return True
@@ -1087,7 +1054,12 @@ def main() -> int:
                 chart = load_history_for_chart(conn, CHART_DAYS)
                 recent_news = load_recent_news(conn, NEWS_LIMIT)
                 summary = summarize_news_with_gemini(recent_news)
-                send_email(render_email_html(latest, recent_news, chart, summary))
+                today = datetime.now(KST).strftime("%Y-%m-%d")
+                subject = f"[일일 유가] WTI/Brent/천연가스 — {today}"
+                send_html_email(
+                    subject,
+                    render_email_html(latest, recent_news, chart, summary),
+                )
                 print("📧 이메일 발송 완료" + (" (AI 요약 포함)" if summary else ""))
             except KeyError as e:
                 print(f"[오류] 환경변수 누락: {e} (GMAIL_USER, GMAIL_APP_PASSWORD 필요)",
