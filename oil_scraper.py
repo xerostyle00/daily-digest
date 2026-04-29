@@ -733,7 +733,7 @@ def render_summary_block(bullets: list[str] | None) -> str:
         "<div style='background:#fffbf2;border-left:3px solid #ffb74d;"
         "padding:12px 16px;margin:8px 0 4px;border-radius:4px'>"
         "<div style='font-size:13px;color:#888;font-weight:500;margin-bottom:6px'>"
-        "📌 오늘의 핵심 메시지 <span style='color:#bbb;font-weight:normal'>"
+        "📌 오늘의 핵심 내용 <span style='color:#bbb;font-weight:normal'>"
         "(AI 요약)</span></div>"
         "<ul style='margin:0;padding-left:20px;font-size:14px;line-height:1.6'>"
         f"{items}"
@@ -948,9 +948,9 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
     if has_chart_image:
         chart_section = (
             f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>"
-            f"{CHART_DAYS}일 추이 (통합)</h2>"
+            f"📈 {CHART_DAYS}일 추이</h2>"
             f"{render_chart_legend(_chart_eligible_labels(chart))}"
-            f'<img src="cid:{CHART_IMAGE_CID}" alt="{CHART_DAYS}일 통합 추이" '
+            f'<img src="cid:{CHART_IMAGE_CID}" alt="{CHART_DAYS}일 추이" '
             f'style="display:block;max-width:100%;height:auto;border:1px solid #eee;'
             f'border-radius:4px">'
         )
@@ -972,10 +972,12 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
         "max-width:900px;margin:0 auto;padding:16px;color:#202124\">"
         f"<h1 style='border-bottom:2px solid #ffb74d;padding-bottom:8px;margin-bottom:16px'>"
         f"📈 국제유가 일일 리포트 — {today}</h1>"
-        f"<h2 style='margin-top:24px;font-size:16px;color:#202124'>시세{ref_caption}</h2>"
+        f"<h2 style='margin-top:24px;font-size:16px;color:#202124'>💹 시세{ref_caption}</h2>"
         f"{prices_section}"
         f"{chart_section}"
-        f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>📰 관련 뉴스 (검색어: {NEWS_QUERY})</h2>"
+        f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>📰 관련 뉴스"
+        f" <span style='color:#888;font-size:13px;font-weight:normal'>"
+        f"(검색어: {NEWS_QUERY})</span></h2>"
         f"{render_summary_block(summary)}"
         f"{news_section}"
         f"{link_section}"
@@ -1007,7 +1009,7 @@ def render_telegram_message(latest: list[dict], summary: list[str] | None,
         parts.append("💹 시세: 데이터 없음")
 
     if summary:
-        parts.extend(["", "📰 <b>오늘의 핵심 메시지</b>"])
+        parts.extend(["", "📰 <b>오늘의 핵심 내용</b>"])
         for s in summary:
             parts.append(f"• {html.escape(s)}")
 
