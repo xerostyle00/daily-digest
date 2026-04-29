@@ -33,7 +33,10 @@ def summarize_titles(
     concrete_examples: '구체적 ~ 포함' 가이드에 들어갈 도메인별 예시 문구
     """
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key or not titles:
+    if not api_key:
+        print("[경고] GEMINI_API_KEY 미설정 — 요약 생략", file=sys.stderr)
+        return None
+    if not titles:
         return None
 
     titles_text = "\n".join(f"- {t}" for t in titles)
@@ -76,13 +79,24 @@ def summarize_titles(
         print(f"[경고] Gemini 요약 실패 (요약 생략): {e}", file=sys.stderr)
         return None
 
+    # 다양한 불릿/넘버링 형식 허용: '- ', '* ', '• ', '1. ', '2) ', '①'
     bullets: list[str] = []
     for line in text.splitlines():
         s = line.strip()
-        if s.startswith(("-", "•", "*")):
-            bullet = s.lstrip("-•*").strip()
-            if bullet:
-                bullets.append(bullet)
+        if not s:
+            continue
+        # 헤더성 라인 제외 (예: '요약:', '**핵심 메시지**', 'SUMMARY:')
+        if s.endswith(":") or s.endswith("**") or s.startswith("#"):
+            continue
+        # 마커 떼어내기 (선두의 -, *, •, 숫자, 점/괄호, 공백, 마크다운 강조 *)
+        cleaned = s.lstrip("-•*0123456789.) ①②③④⑤⑥⑦⑧⑨⑩").strip()
+        # 마크다운 굵게(**X**:) 제거
+        if cleaned.startswith("**"):
+            end = cleaned.find("**", 2)
+            if end > 0:
+                cleaned = cleaned[end + 2:].lstrip(" :").strip()
+        if cleaned:
+            bullets.append(cleaned)
     if not bullets:
         # 파싱 실패 — 진단용 원본 출력 (요약은 생략)
         print(f"[경고] Gemini 응답에 불릿 없음. 원본:\n{text[:500]}", file=sys.stderr)
