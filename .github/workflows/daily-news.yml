@@ -2,9 +2,9 @@ name: Daily AI/GPU News Mailer
 
 on:
   schedule:
-    # 10:00 KST = 01:00 UTC. GitHub Actions cron is in UTC and may
-    # run a few minutes late during peak hours.
-    - cron: '0 1 * * *'
+    # 09:30 KST = 00:30 UTC. GitHub Actions cron 은 UTC 기준이며 피크 시간대에는
+    # 몇 분 지연될 수 있음.
+    - cron: '30 0 * * *'
   workflow_dispatch:
 
 permissions:
@@ -29,7 +29,6 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 

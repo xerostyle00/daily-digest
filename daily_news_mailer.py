@@ -2,7 +2,7 @@
 
 Pulls recent articles from Google News RSS for predefined queries,
 renders an HTML digest, and sends it via Gmail SMTP + Telegram.
-Run on GitHub Actions every morning at 10:00 KST.
+Run on GitHub Actions every morning at 09:30 KST.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ import feedparser
 
 from mailer import send_html_email
 from notifier import send_telegram_message
-from summarizer import render_summary_block_html, summarize_titles
 
 KST = timezone(timedelta(hours=9))
 LOOKBACK_HOURS = 24
@@ -106,9 +105,8 @@ def fetch_articles() -> list[Article]:
     return out
 
 
-def render_email_html(articles: list[Article],
-                      summary: list[str] | None = None) -> str:
-    today = datetime.now(KST).strftime("%Y.%m.%d (%a)")
+def render_email_html(articles: list[Article]) -> str:
+    today = datetime.now(KST).strftime("%Y.%m.%d")
 
     if not articles:
         body = "<p style='color:#666'>지난 24시간 동안 새로운 기사가 없습니다.</p>"
@@ -146,8 +144,7 @@ def render_email_html(articles: list[Article],
         "BlinkMacSystemFont,'Segoe UI','Malgun Gothic',sans-serif;"
         "max-width:900px;margin:0 auto;padding:16px;color:#202124\">"
         f"<h1 style='border-bottom:2px solid #1a73e8;padding-bottom:8px'>"
-        f"🗞 일일 AI / GPU 뉴스 : {today}</h1>"
-        f"{render_summary_block_html(summary)}"
+        f"🗞 일일 AI/GPU 뉴스 ({today})</h1>"
         f"{body}"
         "<p style='margin-top:24px;color:#999;font-size:12px;text-align:center'>"
         "Google News RSS · 최근 24시간 · 자동 발송</p>"
@@ -155,60 +152,26 @@ def render_email_html(articles: list[Article],
     )
 
 
-def _pick_relevant_articles(
-    articles: list[Article],
-    summary: list[str],
-    limit: int = 5,
-) -> list[Article]:
-    """요약 텍스트와 제목 키워드 겹침이 많은 기사 상위 N개.
+def render_telegram_message(articles: list[Article], today_str: str) -> str:
+    """Telegram HTML 메시지: 카테고리별 최신 기사 5건씩."""
+    parts = [f"🗞 <b>일일 AI/GPU 뉴스 ({today_str})</b>", ""]
 
-    summary 가 비어있으면 최신 N개 반환 (graceful fallback).
-    겹침 0인 기사는 제외 — 무관한 기사 끌어들이지 않음.
-    """
-    if not articles:
-        return []
-    if not summary:
-        return articles[:limit]
-
-    # 요약에서 2자 이상 단어 추출 (한국어 조사 제거 안 함 — substring 매칭으로 보완)
-    keywords = {w for s in summary for w in s.split() if len(w) >= 2}
-    if not keywords:
-        return articles[:limit]
-
-    scored: list[tuple[int, Article]] = []
+    by_cat: dict[str, list[Article]] = {}
     for a in articles:
-        title_lower = a.title.lower()
-        score = sum(1 for kw in keywords if kw.lower() in title_lower)
-        scored.append((score, a))
+        by_cat.setdefault(a.category, []).append(a)
 
-    scored.sort(key=lambda x: (-x[0], -x[1].published.timestamp()))
-    relevant = [a for s, a in scored if s > 0][:limit]
-    # 겹치는 기사 없으면 최신 기사로 폴백 (요약 키워드가 너무 추상적인 경우 대비)
-    return relevant or articles[:limit]
-
-
-def render_telegram_message(articles: list[Article],
-                            summary: list[str] | None,
-                            today_str: str) -> str:
-    """Telegram HTML 메시지: AI 요약 + 요약과 정합성 높은 기사 추천."""
-    parts = [f"🗞 <b>[일일 뉴스] AI / GPU — {today_str}</b>", ""]
-
-    if summary:
-        parts.append("📌 <b>오늘의 핵심 내용</b>")
-        for s in summary:
-            parts.append(f"• {html.escape(s)}")
-        parts.append("")
-
-    relevant = _pick_relevant_articles(articles, summary or [], limit=5)
-    if relevant:
-        header = "📰 <b>관련 기사</b>" if summary else "📰 <b>최신 기사</b>"
-        parts.append(header)
-        for i, a in enumerate(relevant, 1):
-            source = f" <i>({html.escape(a.source)})</i>" if a.source else ""
+    for category, items in by_cat.items():
+        icon = CATEGORY_ICONS.get(category, "📰")
+        parts.append(
+            f"{icon} <b>{html.escape(category)} 뉴스</b> "
+            f"<i>(총 {len(items)}건)</i>"
+        )
+        for a in items[:5]:
             parts.append(
-                f'{i}. <a href="{html.escape(a.url, quote=True)}">'
-                f"{html.escape(a.title)}</a>{source}"
+                f'• <a href="{html.escape(a.url, quote=True)}">'
+                f"{html.escape(a.title)}</a>"
             )
+        parts.append("")
 
     return "\n".join(parts).rstrip()
 
@@ -223,17 +186,8 @@ def main() -> int:
     articles = fetch_articles()
     print(f"Fetched {len(articles)} articles", file=sys.stderr)
 
-    summary = summarize_titles(
-        [a.title for a in articles],
-        domain="AI·GPU 산업",
-        concrete_examples=(
-            "구체적 모델명·기업명·수치 "
-            "(예: 'GPT-5 출시', 'NVIDIA RTX 5090', '시총 1조달러')"
-        ),
-    )
-
     today = datetime.now(KST).strftime("%Y.%m.%d")
-    html_body = render_email_html(articles, summary)
+    html_body = render_email_html(articles)
 
     # GitHub Pages 호스팅용 사본
     PUBLIC_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -241,14 +195,13 @@ def main() -> int:
     print(f"🌐 공개본: {PUBLIC_REPORT_PATH}", file=sys.stderr)
 
     # 이메일
-    send_html_email(f"[일일 뉴스] AI / GPU — {today}", html_body)
-    print("📧 이메일 발송 완료" + (" (AI 요약 포함)" if summary else ""),
-          file=sys.stderr)
+    send_html_email(f"일일 AI/GPU 뉴스 ({today})", html_body)
+    print("📧 이메일 발송 완료", file=sys.stderr)
 
     # 텔레그램 (옵션)
     if _should_send_telegram():
         try:
-            send_telegram_message(render_telegram_message(articles, summary, today))
+            send_telegram_message(render_telegram_message(articles, today))
             print("💬 텔레그램 발송 완료", file=sys.stderr)
         except KeyError as e:
             print(f"[오류] 환경변수 누락: {e} "
