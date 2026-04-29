@@ -155,33 +155,60 @@ def render_email_html(articles: list[Article],
     )
 
 
+def _pick_relevant_articles(
+    articles: list[Article],
+    summary: list[str],
+    limit: int = 5,
+) -> list[Article]:
+    """요약 텍스트와 제목 키워드 겹침이 많은 기사 상위 N개.
+
+    summary 가 비어있으면 최신 N개 반환 (graceful fallback).
+    겹침 0인 기사는 제외 — 무관한 기사 끌어들이지 않음.
+    """
+    if not articles:
+        return []
+    if not summary:
+        return articles[:limit]
+
+    # 요약에서 2자 이상 단어 추출 (한국어 조사 제거 안 함 — substring 매칭으로 보완)
+    keywords = {w for s in summary for w in s.split() if len(w) >= 2}
+    if not keywords:
+        return articles[:limit]
+
+    scored: list[tuple[int, Article]] = []
+    for a in articles:
+        title_lower = a.title.lower()
+        score = sum(1 for kw in keywords if kw.lower() in title_lower)
+        scored.append((score, a))
+
+    scored.sort(key=lambda x: (-x[0], -x[1].published.timestamp()))
+    relevant = [a for s, a in scored if s > 0][:limit]
+    # 겹치는 기사 없으면 최신 기사로 폴백 (요약 키워드가 너무 추상적인 경우 대비)
+    return relevant or articles[:limit]
+
+
 def render_telegram_message(articles: list[Article],
                             summary: list[str] | None,
                             today_str: str) -> str:
-    """Telegram HTML 메시지: 카테고리별 헤드라인 상위 3건 + AI 요약 + 링크."""
+    """Telegram HTML 메시지: AI 요약 + 요약과 정합성 높은 기사 추천."""
     parts = [f"🗞 <b>[일일 뉴스] AI / GPU — {today_str}</b>", ""]
-
-    by_cat: dict[str, list[Article]] = {}
-    for a in articles:
-        by_cat.setdefault(a.category, []).append(a)
-
-    for category, items in by_cat.items():
-        icon = CATEGORY_ICONS.get(category, "📰")
-        parts.append(
-            f"{icon} <b>{html.escape(category)} 뉴스</b> "
-            f"<i>(총 {len(items)}건)</i>"
-        )
-        for a in items[:3]:
-            parts.append(
-                f'• <a href="{html.escape(a.url, quote=True)}">'
-                f"{html.escape(a.title)}</a>"
-            )
-        parts.append("")
 
     if summary:
         parts.append("📌 <b>오늘의 핵심 내용</b>")
         for s in summary:
             parts.append(f"• {html.escape(s)}")
+        parts.append("")
+
+    relevant = _pick_relevant_articles(articles, summary or [], limit=5)
+    if relevant:
+        header = "📰 <b>관련 기사</b>" if summary else "📰 <b>최신 기사</b>"
+        parts.append(header)
+        for i, a in enumerate(relevant, 1):
+            source = f" <i>({html.escape(a.source)})</i>" if a.source else ""
+            parts.append(
+                f'{i}. <a href="{html.escape(a.url, quote=True)}">'
+                f"{html.escape(a.title)}</a>{source}"
+            )
 
     return "\n".join(parts).rstrip()
 
