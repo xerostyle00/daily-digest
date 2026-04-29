@@ -7,6 +7,9 @@ on:
     - cron: '0 1 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write   # gh-pages 브랜치 푸시 권한
+
 jobs:
   send:
     runs-on: ubuntu-latest
@@ -18,10 +21,22 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - run: pip install feedparser
+      - run: pip install -r requirements.txt
 
       - run: python daily_news_mailer.py
         env:
+          SEND_TELEGRAM: '1'
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Publish report to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./output/public
+          publish_branch: gh-pages
+          keep_files: true
