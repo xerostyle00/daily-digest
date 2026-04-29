@@ -30,6 +30,7 @@ import yfinance as yf  # noqa: E402
 
 from mailer import send_html_email  # noqa: E402
 from notifier import send_telegram_message  # noqa: E402
+from summarizer import render_summary_block_html, summarize_titles  # noqa: E402
 
 # Windows 콘솔 한글/이모지 출력을 위한 UTF-8 재설정
 if hasattr(sys.stdout, "reconfigure"):
@@ -61,13 +62,6 @@ TICKER_COLORS = {
     "Brent 원유": "#42a5f5",
     "천연가스": "#ffb74d",
 }
-GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_ENDPOINT = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
-
-
 # ────────────────────────────────────────────────────────────
 # 데이터 수집
 # ────────────────────────────────────────────────────────────
@@ -666,81 +660,6 @@ def render_html(conn: sqlite3.Connection) -> str:
 # 이메일 발송 (Gmail SMTP)
 # ────────────────────────────────────────────────────────────
 
-def summarize_news_with_gemini(news: list[dict]) -> list[str] | None:
-    """Gemini API 로 뉴스 제목 → 한국어 불릿 3줄. 키 없거나 실패 시 None."""
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key or not news:
-        return None
-
-    titles = "\n".join(f"- {n['title']}" for n in news)
-    prompt = (
-        "다음은 오늘 수집된 국제유가 관련 한국어 뉴스 제목 목록입니다.\n"
-        "전체를 종합해 시장에 가장 중요한 핵심 메시지 3가지를 정보가 충분한 한국어 불릿로 요약하세요.\n\n"
-        "규칙:\n"
-        "- 정확히 3줄\n"
-        "- 각 줄은 한 문장으로 작성하되, 60~120자 분량으로 충분한 내용을 담을 것\n"
-        "- 단순 키워드 나열 금지 — 무엇이 일어났고 시장에 어떤 영향을 줬는지 인과를 한 문장에 담을 것\n"
-        "- 가능하면 구체적 숫자·가격대·종목명 포함 "
-        "(예: 'WTI 100달러 돌파', '에쓰오일 8% 상승')\n"
-        "- 제목에 명시된 사실만 사용. 추측·과장 금지\n"
-        "- 동일 사건이 여러 번 나오면 하나로 묶되 가장 정보량이 많은 형태로 표현\n"
-        "- 문체: 각 문장을 명사형 어미 '~임/~함/~됨'으로 종결 "
-        "(예: '재돌파임', '강세 보임', '확대됨'). 평서형 '~했다', '~한다' 지양\n"
-        '- 출력은 "- " 로 시작하는 불릿만, 다른 설명 텍스트 금지\n\n'
-        f"뉴스 제목:\n{titles}"
-    )
-
-    try:
-        resp = requests.post(
-            f"{GEMINI_ENDPOINT}?key={api_key}",
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                # Gemini 2.5 Flash 는 thinking 토큰을 먼저 소비하므로 넉넉히.
-                # 한국어 출력 3줄 + 추론 여유분.
-                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        candidate = data["candidates"][0]
-        text = candidate["content"]["parts"][0]["text"].strip()
-        finish_reason = candidate.get("finishReason", "")
-        if finish_reason and finish_reason != "STOP":
-            print(f"[경고] Gemini finish_reason={finish_reason} (응답 잘림 가능)",
-                  file=sys.stderr)
-    except Exception as e:
-        print(f"[경고] Gemini 요약 실패 (요약 생략): {e}", file=sys.stderr)
-        return None
-
-    bullets: list[str] = []
-    for line in text.splitlines():
-        s = line.strip().lstrip("-•*").strip()
-        if s:
-            bullets.append(s)
-    return bullets[:3] if bullets else None
-
-
-def render_summary_block(bullets: list[str] | None) -> str:
-    """이메일 본문 상단의 핵심 메시지 박스. None/빈 리스트면 빈 문자열."""
-    if not bullets:
-        return ""
-    items = "".join(
-        f"<li style='padding:3px 0;color:#333'>{html.escape(b)}</li>"
-        for b in bullets
-    )
-    return (
-        "<div style='background:#fffbf2;border-left:3px solid #ffb74d;"
-        "padding:12px 16px;margin:8px 0 4px;border-radius:4px'>"
-        "<div style='font-size:13px;color:#888;font-weight:500;margin-bottom:6px'>"
-        "📌 오늘의 핵심 내용 <span style='color:#bbb;font-weight:normal'>"
-        "(AI 요약)</span></div>"
-        "<ul style='margin:0;padding-left:20px;font-size:14px;line-height:1.6'>"
-        f"{items}"
-        "</ul></div>"
-    )
-
-
 def _stats_from_chart(chart: dict) -> dict[str, dict]:
     """{label: {min, max, avg, range_pct}} — 시리즈 전체에서 계산."""
     out: dict[str, dict] = {}
@@ -978,7 +897,7 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
         f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>📰 관련 뉴스"
         f" <span style='color:#888;font-size:13px;font-weight:normal'>"
         f"(검색어: {NEWS_QUERY})</span></h2>"
-        f"{render_summary_block(summary)}"
+        f"{render_summary_block_html(summary)}"
         f"{news_section}"
         f"{link_section}"
         "<p style='margin-top:24px;color:#999;font-size:12px;text-align:center'>"
@@ -1134,7 +1053,14 @@ def main() -> int:
         latest = load_latest_prices(conn)
         chart = load_history_for_chart(conn, CHART_DAYS)
         recent_news = load_recent_news(conn, NEWS_LIMIT)
-        summary = summarize_news_with_gemini(recent_news)
+        summary = summarize_titles(
+            [n["title"] for n in recent_news],
+            domain="국제유가",
+            concrete_examples=(
+                "구체적 숫자·가격대·종목명 "
+                "(예: 'WTI 100달러 돌파', '에쓰오일 8% 상승')"
+            ),
+        )
         today = datetime.now(KST).strftime("%Y.%m.%d")
         ref_date = max((r["date"] for r in latest if r.get("date")), default="")
 
