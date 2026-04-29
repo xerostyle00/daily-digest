@@ -1,0 +1,28 @@
+name: Daily Oil Price Mailer
+
+on:
+  schedule:
+    # 08:30 KST = 23:30 UTC (전일). 미국 시장 종료 후, 한국 장 개장 전.
+    # GitHub Actions cron 은 UTC 기준이며 피크 시간대에는 몇 분 지연될 수 있음.
+    - cron: '30 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python oil_scraper.py
+        env:
+          SEND_EMAIL: '1'
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}

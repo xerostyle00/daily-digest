@@ -13,10 +13,15 @@ from __future__ import annotations
 import csv
 import html
 import json
+import os
+import smtplib
 import sqlite3
 import sys
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr
 from pathlib import Path
 from urllib.parse import quote
 
@@ -28,6 +33,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+KST = timezone(timedelta(hours=9))
 OUTPUT_DIR = Path(__file__).parent / "output"
 DB_PATH = OUTPUT_DIR / "OIL_history.db"
 REPORT_PATH = OUTPUT_DIR / "OIL_report.html"
@@ -43,6 +49,12 @@ TICKERS = {
     "Brent 원유": "BZ=F",
     "천연가스": "NG=F",
 }
+TICKER_COLORS = {
+    "WTI 원유": "#ef5350",
+    "Brent 원유": "#42a5f5",
+    "천연가스": "#ffb74d",
+}
+SENDER_NAME = "XEROS"
 
 
 # ────────────────────────────────────────────────────────────
@@ -640,6 +652,276 @@ def render_html(conn: sqlite3.Connection) -> str:
 
 
 # ────────────────────────────────────────────────────────────
+# 이메일 발송 (Gmail SMTP)
+# ────────────────────────────────────────────────────────────
+
+def _stats_from_chart(chart: dict) -> dict[str, dict]:
+    """{label: {min, max, avg, range_pct}} — 시리즈 전체에서 계산."""
+    out: dict[str, dict] = {}
+    for label, series in chart.items():
+        if not series:
+            continue
+        closes = [p["close"] for p in series]
+        vmin = min(closes)
+        vmax = max(closes)
+        avg = sum(closes) / len(closes)
+        range_pct = ((vmax - vmin) / vmin * 100) if vmin else 0.0
+        out[label] = {"min": vmin, "max": vmax, "avg": avg, "range_pct": range_pct}
+    return out
+
+
+def render_combined_chart_svg(chart: dict, width: int = 820, height: int = 260) -> str:
+    """30일 통합 추이 — 종목별 base=100 정규화. 변동폭이 다른 종목을 한 차트에 비교."""
+    pad_l, pad_r, pad_t, pad_b = 44, 16, 14, 30
+    inner_w = width - pad_l - pad_r
+    inner_h = height - pad_t - pad_b
+
+    normalized: dict[str, list[tuple[str, float]]] = {}
+    max_dates: list[str] = []
+    for label, series in chart.items():
+        if len(series) < 2 or not series[0]["close"]:
+            continue
+        base = series[0]["close"]
+        normalized[label] = [(p["date"], p["close"] / base * 100) for p in series]
+        if len(series) > len(max_dates):
+            max_dates = [p["date"] for p in series]
+
+    if not normalized:
+        return ""
+
+    all_vals = [v for s in normalized.values() for _, v in s]
+    vmin, vmax = min(all_vals), max(all_vals)
+    margin = max((vmax - vmin) * 0.08, 1.0)
+    vmin -= margin
+    vmax += margin
+
+    parts: list[str] = []
+
+    for i in range(5):
+        v = vmin + (vmax - vmin) * i / 4
+        y = pad_t + inner_h - ((v - vmin) / (vmax - vmin)) * inner_h
+        parts.append(
+            f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + inner_w}" y2="{y:.1f}" '
+            f'stroke="#eee" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{pad_l - 6}" y="{y + 3.5:.1f}" fill="#999" font-size="10" '
+            f'text-anchor="end" font-family="sans-serif">{v:.0f}</text>'
+        )
+
+    n_points = len(max_dates)
+    if n_points > 1:
+        step = max(1, (n_points - 1) // 5)
+        for i in range(0, n_points, step):
+            x = pad_l + (i / (n_points - 1)) * inner_w
+            mmdd = max_dates[i][5:]
+            parts.append(
+                f'<text x="{x:.1f}" y="{pad_t + inner_h + 14}" fill="#999" font-size="10" '
+                f'text-anchor="middle" font-family="sans-serif">{mmdd}</text>'
+            )
+
+    for label, series in normalized.items():
+        color = TICKER_COLORS.get(label, "#666")
+        n = len(series)
+        points = []
+        for j, (_, v) in enumerate(series):
+            x = pad_l + (j / (n - 1)) * inner_w
+            y = pad_t + inner_h - ((v - vmin) / (vmax - vmin)) * inner_h
+            points.append(f"{x:.1f},{y:.1f}")
+        parts.append(
+            f'<path d="M{" L".join(points)}" fill="none" stroke="{color}" '
+            f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+        )
+
+    return (
+        f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {width} {height}" '
+        f'style="display:block;max-width:100%;height:auto">'
+        f'{"".join(parts)}'
+        "</svg>"
+    )
+
+
+def render_chart_legend(labels: list[str]) -> str:
+    items = "".join(
+        f'<span style="display:inline-block;margin-right:16px">'
+        f'<span style="display:inline-block;width:10px;height:10px;background:{TICKER_COLORS.get(label, "#666")};'
+        f'vertical-align:middle;margin-right:6px"></span>'
+        f'<span style="vertical-align:middle;font-size:13px;color:#444">{html.escape(label)}</span>'
+        f"</span>"
+        for label in labels
+    )
+    return (
+        '<div style="margin:12px 0 4px 0">'
+        f"{items}"
+        '<span style="color:#999;font-size:11px;margin-left:8px">'
+        "(시작일 = 100 기준 정규화)</span>"
+        "</div>"
+    )
+
+
+def render_email_html(latest: list[dict], news: list[dict], chart: dict) -> str:
+    """이메일 클라이언트 호환 HTML (인라인 스타일, 표 기반, JS 없음)."""
+    today = datetime.now(KST).strftime("%Y-%m-%d (%a)")
+    stats = _stats_from_chart(chart)
+
+    ref_dates = sorted({r["date"] for r in latest if r.get("date")}, reverse=True)
+    ref_caption = (
+        f" <span style='color:#888;font-size:13px;font-weight:normal'>"
+        f"(기준일: {html.escape(ref_dates[0])})</span>"
+        if ref_dates else ""
+    )
+
+    if not latest:
+        prices_section = "<p style='color:#666'>가격 데이터 없음</p>"
+    else:
+        dash = "<span style='color:#bbb'>-</span>"
+        rows = []
+        for r in latest:
+            if r["change"] > 0:
+                arrow, color = "▲", "#ef5350"
+            elif r["change"] < 0:
+                arrow, color = "▼", "#42a5f5"
+            else:
+                arrow, color = "─", "#666"
+            s = stats.get(r["label"])
+            if s:
+                avg_cell = f"{s['avg']:,.2f}"
+                max_cell = f"{s['max']:,.2f}"
+                min_cell = f"{s['min']:,.2f}"
+                range_cell = f"{s['range_pct']:.2f}%"
+            else:
+                avg_cell = max_cell = min_cell = range_cell = dash
+            rows.append(
+                "<tr>"
+                f"<td style='padding:8px 10px'>{html.escape(r['label'])}"
+                f" <span style='color:#888;font-size:12px'>({html.escape(r['ticker'])})</span></td>"
+                f"<td style='padding:8px 10px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums'>"
+                f"{r['close']:,.2f}</td>"
+                f"<td style='padding:8px 10px;text-align:right;color:{color};font-variant-numeric:tabular-nums'>"
+                f"{arrow} {r['change']:+.2f} ({r['change_pct']:+.2f}%)</td>"
+                f"<td style='padding:8px 10px;text-align:right;font-variant-numeric:tabular-nums'>"
+                f"{avg_cell}</td>"
+                f"<td style='padding:8px 10px;text-align:right;color:#ef5350;font-variant-numeric:tabular-nums'>"
+                f"{max_cell}</td>"
+                f"<td style='padding:8px 10px;text-align:right;color:#42a5f5;font-variant-numeric:tabular-nums'>"
+                f"{min_cell}</td>"
+                f"<td style='padding:8px 10px;text-align:right;color:#9c27b0;font-variant-numeric:tabular-nums'>"
+                f"{range_cell}</td>"
+                "</tr>"
+            )
+        prices_section = (
+            "<table style='border-collapse:collapse;width:100%;border:1px solid #ddd;font-size:14px'>"
+            "<thead style='background:#f8f9fa'>"
+            "<tr>"
+            "<th rowspan='2' style='padding:8px 10px;text-align:left;border-bottom:1px solid #ddd'>종목</th>"
+            "<th rowspan='2' style='padding:8px 10px;text-align:right;border-bottom:1px solid #ddd'>현재가</th>"
+            "<th rowspan='2' style='padding:8px 10px;text-align:right;border-bottom:1px solid #ddd'>전일 대비</th>"
+            f"<th rowspan='2' style='padding:8px 10px;text-align:right;border-bottom:1px solid #ddd'>"
+            f"{CHART_DAYS}일 평균</th>"
+            f"<th colspan='3' style='padding:8px 10px;text-align:center;border-bottom:1px solid #eee'>"
+            f"{CHART_DAYS}일 변동폭</th>"
+            "</tr>"
+            "<tr>"
+            "<th style='padding:6px 10px;text-align:right;font-weight:500;font-size:12px;color:#666;"
+            "border-bottom:1px solid #ddd'>최고</th>"
+            "<th style='padding:6px 10px;text-align:right;font-weight:500;font-size:12px;color:#666;"
+            "border-bottom:1px solid #ddd'>최저</th>"
+            "<th style='padding:6px 10px;text-align:right;font-weight:500;font-size:12px;color:#666;"
+            "border-bottom:1px solid #ddd'>%</th>"
+            "</tr>"
+            "</thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+
+    if not news:
+        news_section = "<p style='color:#666'>뉴스 없음</p>"
+    else:
+        news_rows = "".join(
+            "<tr>"
+            f"<td style='padding:6px 10px;white-space:nowrap;color:#666;font-size:12px'>"
+            f"{html.escape(n.get('pub_date') or '')}</td>"
+            f"<td style='padding:6px 10px'><a href=\"{html.escape(n['link'], quote=True)}\" "
+            f"style='color:#1a73e8;text-decoration:none'>{html.escape(n['title'])}</a></td>"
+            f"<td style='padding:6px 10px;color:#444;font-size:13px'>"
+            f"{html.escape(n.get('source') or '')}</td>"
+            "</tr>"
+            for n in news
+        )
+        news_section = (
+            "<table style='border-collapse:collapse;width:100%;border:1px solid #ddd;font-size:14px'>"
+            "<thead style='background:#f8f9fa;text-align:left'>"
+            "<tr><th style='padding:8px 10px'>발행</th>"
+            "<th style='padding:8px 10px'>제목</th>"
+            "<th style='padding:8px 10px'>출처</th></tr></thead>"
+            f"<tbody>{news_rows}</tbody></table>"
+        )
+
+    combined_svg = render_combined_chart_svg(chart)
+    if combined_svg:
+        chart_section = (
+            f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>"
+            f"{CHART_DAYS}일 추이 (통합)</h2>"
+            f"{render_chart_legend(list(chart.keys()))}"
+            f"{combined_svg}"
+        )
+    else:
+        chart_section = ""
+
+    return (
+        "<!doctype html><html><body style=\"font-family:-apple-system,"
+        "BlinkMacSystemFont,'Segoe UI','Malgun Gothic',sans-serif;"
+        "max-width:900px;margin:0 auto;padding:16px;color:#202124\">"
+        f"<h1 style='border-bottom:2px solid #ffb74d;padding-bottom:8px;margin-bottom:16px'>"
+        f"📈 국제유가 일일 리포트 — {today}</h1>"
+        f"<h2 style='margin-top:24px;font-size:16px;color:#202124'>시세{ref_caption}</h2>"
+        f"{prices_section}"
+        f"{chart_section}"
+        f"<h2 style='margin-top:28px;font-size:16px;color:#202124'>📰 관련 뉴스 (검색어: {NEWS_QUERY})</h2>"
+        f"{news_section}"
+        "<p style='margin-top:32px;color:#999;font-size:12px'>"
+        "데이터: yfinance · Google News RSS · 자동 발송</p>"
+        "</body></html>"
+    )
+
+
+def _parse_recipients(raw: str) -> list[str]:
+    """콤마/세미콜론/줄바꿈 구분 문자열 → 빈값 제거된 주소 리스트."""
+    return [
+        addr.strip()
+        for addr in raw.replace(";", ",").replace("\n", ",").split(",")
+        if addr.strip()
+    ]
+
+
+def send_email(html_body: str) -> None:
+    user = os.environ["GMAIL_USER"]
+    password = os.environ["GMAIL_APP_PASSWORD"]
+    to_list = _parse_recipients(os.environ.get("RECIPIENT_EMAIL", "")) or [user]
+    bcc_list = _parse_recipients(os.environ.get("RECIPIENT_BCC", ""))
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"[일일 유가] WTI/Brent/천연가스 — {today}"
+    msg["From"] = formataddr((SENDER_NAME, user))
+    msg["To"] = ", ".join(to_list)
+    if bcc_list:
+        # BCC 헤더는 메시지에 포함하지 않고 SMTP envelope 으로만 전달
+        pass
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(user, password)
+        smtp.send_message(msg, to_addrs=to_list + bcc_list)
+
+
+def _should_send_email() -> bool:
+    if "--email" in sys.argv:
+        return True
+    return os.environ.get("SEND_EMAIL", "").strip().lower() in ("1", "true", "yes")
+
+
+# ────────────────────────────────────────────────────────────
 # 콘솔 출력 & CSV 백업
 # ────────────────────────────────────────────────────────────
 
@@ -728,6 +1010,21 @@ def main() -> int:
         except Exception as e:
             print(f"[오류] HTML 생성 실패: {e}", file=sys.stderr)
             return 1
+
+        if _should_send_email():
+            try:
+                latest = load_latest_prices(conn)
+                chart = load_history_for_chart(conn, CHART_DAYS)
+                recent_news = load_recent_news(conn, NEWS_LIMIT)
+                send_email(render_email_html(latest, recent_news, chart))
+                print("📧 이메일 발송 완료")
+            except KeyError as e:
+                print(f"[오류] 환경변수 누락: {e} (GMAIL_USER, GMAIL_APP_PASSWORD 필요)",
+                      file=sys.stderr)
+                return 1
+            except Exception as e:
+                print(f"[오류] 이메일 발송 실패: {e}", file=sys.stderr)
+                return 1
 
         return 0 if (prices or news) else 1
     finally:
