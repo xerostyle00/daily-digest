@@ -837,7 +837,7 @@ def render_chart_legend(labels: list[str]) -> str:
         '<div style="margin:12px 0 4px 0">'
         f"{items}"
         '<span style="color:#999;font-size:11px;margin-left:8px">'
-        "(일별 종가, $)</span>"
+        "(일별 종가, 단위: $)</span>"
         "</div>"
     )
 
@@ -850,13 +850,13 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
     has_chart_image=True 일 때 차트는 <img src="cid:..."> 로 참조 (PNG 인라인 첨부).
     False 면 차트 섹션 자체를 생략.
     """
-    today = datetime.now(KST).strftime("%Y-%m-%d (%a)")
+    today = datetime.now(KST).strftime("%Y.%m.%d (%a)")
     stats = _stats_from_chart(chart)
 
     ref_dates = sorted({r["date"] for r in latest if r.get("date")}, reverse=True)
     ref_caption = (
         f" <span style='color:#888;font-size:13px;font-weight:normal'>"
-        f"(기준일: {html.escape(ref_dates[0])})</span>"
+        f"(기준일: {html.escape(ref_dates[0].replace('-', '.'))}, 단위: $)</span>"
         if ref_dates else ""
     )
 
@@ -971,7 +971,7 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
         "BlinkMacSystemFont,'Segoe UI','Malgun Gothic',sans-serif;"
         "max-width:900px;margin:0 auto;padding:16px;color:#202124\">"
         f"<h1 style='border-bottom:2px solid #ffb74d;padding-bottom:8px;margin-bottom:16px'>"
-        f"📈 국제유가 일일 리포트 — {today}</h1>"
+        f"📈 국제유가 일일 리포트 : {today}</h1>"
         f"<h2 style='margin-top:24px;font-size:16px;color:#202124'>💹 시세{ref_caption}</h2>"
         f"{prices_section}"
         f"{chart_section}"
@@ -995,7 +995,10 @@ def render_telegram_message(latest: list[dict], summary: list[str] | None,
     parts = [f"📈 <b>[일일 유가] WTI/Brent/천연가스 — {today_str}</b>", ""]
 
     if latest:
-        ref_str = f" <i>(기준일: {html.escape(ref_date)})</i>" if ref_date else ""
+        ref_str = (
+            f" <i>(기준일: {html.escape(ref_date.replace('-', '.'))}, 단위: $)</i>"
+            if ref_date else ""
+        )
         parts.append(f"💹 <b>시세</b>{ref_str}")
         for r in latest:
             arrow = "▲" if r["change"] > 0 else "▼" if r["change"] < 0 else "─"
@@ -1132,7 +1135,7 @@ def main() -> int:
         chart = load_history_for_chart(conn, CHART_DAYS)
         recent_news = load_recent_news(conn, NEWS_LIMIT)
         summary = summarize_news_with_gemini(recent_news)
-        today = datetime.now(KST).strftime("%Y-%m-%d")
+        today = datetime.now(KST).strftime("%Y.%m.%d")
         ref_date = max((r["date"] for r in latest if r.get("date")), default="")
 
         if _should_send_email():
