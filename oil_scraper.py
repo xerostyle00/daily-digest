@@ -681,13 +681,20 @@ def summarize_news_with_gemini(news: list[dict]) -> list[str] | None:
             f"{GEMINI_ENDPOINT}?key={api_key}",
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 400},
+                # Gemini 2.5 Flash 는 thinking 토큰을 먼저 소비하므로 넉넉히.
+                # 한국어 출력 3줄 + 추론 여유분.
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
             },
-            timeout=20,
+            timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        candidate = data["candidates"][0]
+        text = candidate["content"]["parts"][0]["text"].strip()
+        finish_reason = candidate.get("finishReason", "")
+        if finish_reason and finish_reason != "STOP":
+            print(f"[경고] Gemini finish_reason={finish_reason} (응답 잘림 가능)",
+                  file=sys.stderr)
     except Exception as e:
         print(f"[경고] Gemini 요약 실패 (요약 생략): {e}", file=sys.stderr)
         return None
