@@ -58,9 +58,9 @@ def summarize_titles(
             f"{GEMINI_ENDPOINT}?key={api_key}",
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                # Gemini 2.5 Flash 는 thinking 토큰을 출력 예산에서 먼저 소비하므로
-                # 한국어 출력 3줄 + 추론 여유분으로 넉넉히.
-                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
+                # Gemini 2.5 Flash 는 thinking 토큰을 출력 예산에서 먼저 소비하므로 넉넉히.
+                # 입력 제목이 많을수록 추론 토큰도 늘어나는 경향 — 4000 으로 여유분 확보.
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4000},
             },
             timeout=30,
         )
@@ -78,10 +78,16 @@ def summarize_titles(
 
     bullets: list[str] = []
     for line in text.splitlines():
-        s = line.strip().lstrip("-•*").strip()
-        if s:
-            bullets.append(s)
-    return bullets[:3] if bullets else None
+        s = line.strip()
+        if s.startswith(("-", "•", "*")):
+            bullet = s.lstrip("-•*").strip()
+            if bullet:
+                bullets.append(bullet)
+    if not bullets:
+        # 파싱 실패 — 진단용 원본 출력 (요약은 생략)
+        print(f"[경고] Gemini 응답에 불릿 없음. 원본:\n{text[:500]}", file=sys.stderr)
+        return None
+    return bullets[:3]
 
 
 def render_summary_block_html(bullets: list[str] | None) -> str:
