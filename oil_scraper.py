@@ -920,12 +920,25 @@ def render_telegram_message(latest: list[dict], summary: list[str] | None,
         )
         parts.append(f"💹 <b>시세</b>{ref_str}")
         for r in latest:
-            arrow = "▲" if r["change"] > 0 else "▼" if r["change"] < 0 else "─"
+            # 한국식 관례(상승=빨강, 하락=파랑). 색상 원형 이모지는 라벨 앞에 두고
+            # 삼각형 ▲▼─은 변화량 옆에 둔다. 변화량은 <b>로 강조해 시각적 무게를 더함.
+            # (사각형 대신 원형: <code> 박스/▫️ 불릿 등 사각 요소와의 시각 충돌 회피)
+            if r["change"] > 0:
+                color, arrow = "🔴", "▲"
+            elif r["change"] < 0:
+                color, arrow = "🔵", "▼"
+            else:
+                color, arrow = "⚪", "─"
             avg_val = stats.get(r["label"], {}).get("avg")
-            avg_str = f" | 30일 평균 {avg_val:,.2f}" if avg_val is not None else ""
+            avg_str = (
+                f"  ·  30일 평균 <code>{avg_val:,.2f}</code>"
+                if avg_val is not None else ""
+            )
             parts.append(
-                f"• <b>{html.escape(r['label'])}</b>: {r['close']:,.2f} "
-                f"{arrow} {r['change']:+.2f} ({r['change_pct']:+.2f}%){avg_str}"
+                f"{color} <b>{html.escape(r['label'])}</b>  "
+                f"<code>{r['close']:,.2f}</code>  "
+                f"{arrow} <b>{r['change']:+.2f}</b> "
+                f"(<b>{r['change_pct']:+.2f}%</b>){avg_str}"
             )
     else:
         parts.append("💹 시세: 데이터 없음")
@@ -933,7 +946,7 @@ def render_telegram_message(latest: list[dict], summary: list[str] | None,
     if summary:
         parts.extend(["", "📰 <b>오늘의 핵심 내용</b>"])
         for s in summary:
-            parts.append(f"• {html.escape(s)}")
+            parts.append(f"▫️ {html.escape(s)}")
 
     parts.extend([
         "",

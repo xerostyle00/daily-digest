@@ -36,6 +36,8 @@ QUERIES: list[tuple[str, str]] = [
     ("GPU", '"RTX" (출시 OR release OR launch)'),
 ]
 CATEGORY_ICONS = {"AI": "🤖", "GPU": "💻"}
+# 텔레그램에서 카테고리별 시각 구분용 컬러 불릿 (AI=파랑, GPU=주황)
+CATEGORY_BULLETS = {"AI": "🔹", "GPU": "🔸"}
 
 
 @dataclass
@@ -162,14 +164,20 @@ def render_telegram_message(articles: list[Article], today_str: str) -> str:
 
     for category, items in by_cat.items():
         icon = CATEGORY_ICONS.get(category, "📰")
+        bullet = CATEGORY_BULLETS.get(category, "•")
         parts.append(
             f"{icon} <b>{html.escape(category)} 뉴스</b> "
             f"<i>(총 {len(items)}건)</i>"
         )
         for a in items[:5]:
+            # 제목은 <a>(Telegram 링크 색상=강조 블루),
+            # 출처는 <code>(모노스페이스+회색 배경)으로 색을 분리해 가독성 향상.
+            src_html = (
+                f"  <code>{html.escape(a.source)}</code>" if a.source else ""
+            )
             parts.append(
-                f'• <a href="{html.escape(a.url, quote=True)}">'
-                f"{html.escape(a.title)}</a>"
+                f'{bullet} <a href="{html.escape(a.url, quote=True)}">'
+                f"{html.escape(a.title)}</a>{src_html}"
             )
         parts.append("")
 
