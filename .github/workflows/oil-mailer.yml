@@ -2,9 +2,9 @@ name: Daily Oil Price Mailer
 
 on:
   schedule:
-    # 08:30 KST = 23:30 UTC (전일). 미국 시장 종료 후, 한국 장 개장 전.
+    # 08:35 KST = 23:35 UTC (전일). 미국 시장 종료 후, 한국 장 개장 전.
     # GitHub Actions cron 은 UTC 기준이며 피크 시간대에는 몇 분 지연될 수 있음.
-    - cron: '30 23 * * *'
+    - cron: '35 23 * * *'
   workflow_dispatch:
 
 permissions:

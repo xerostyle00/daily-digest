@@ -2,9 +2,9 @@ name: Daily AI/GPU News Mailer
 
 on:
   schedule:
-    # 09:30 KST = 00:30 UTC. GitHub Actions cron 은 UTC 기준이며 피크 시간대에는
+    # 09:35 KST = 00:35 UTC. GitHub Actions cron 은 UTC 기준이며 피크 시간대에는
     # 몇 분 지연될 수 있음.
-    - cron: '30 0 * * *'
+    - cron: '35 0 * * *'
   workflow_dispatch:
 
 permissions:
