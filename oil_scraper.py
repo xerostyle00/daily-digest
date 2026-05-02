@@ -30,6 +30,7 @@ import yfinance as yf  # noqa: E402
 
 from mailer import send_html_email  # noqa: E402
 from notifier import send_telegram_message  # noqa: E402
+from actions_utils import already_sent_today_kst  # noqa: E402
 from news_utils import strip_source_suffix  # noqa: E402
 from summarizer import render_summary_block_html, summarize_titles  # noqa: E402
 
@@ -1015,6 +1016,12 @@ def save_csv(path: Path, rows: list[dict]) -> None:
 # ────────────────────────────────────────────────────────────
 
 def main() -> int:
+    # 멱등성: cron 슬롯이 여러 개라 같은 날 중복 트리거될 수 있다. 이미 오늘
+    # 성공한 run 이 있으면 즉시 종료해 메일·텔레그램 중복 발송을 막는다.
+    if already_sent_today_kst():
+        print("✓ 오늘(KST) 이미 발송 완료 — 종료", file=sys.stderr)
+        return 0
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     now_local = datetime.now()
     captured_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")

@@ -2,9 +2,14 @@ name: Daily Oil Price Mailer
 
 on:
   schedule:
-    # 08:35 KST = 23:35 UTC (전일). 미국 시장 종료 후, 한국 장 개장 전.
-    # GitHub Actions cron 은 UTC 기준이며 피크 시간대에는 몇 분 지연될 수 있음.
-    - cron: '35 23 * * *'
+    # GitHub Actions schedule 은 무료 티어에서 6h+ 늦거나 누락되는 경우가 있어,
+    # 08:35 KST(23:35 UTC 전일) 를 기준으로 약 +90분 백업 슬롯을 깔아 가장
+    # 먼저 트리거된 슬롯이 발송하도록 한다. 두 번째 이후 슬롯은 mailer 의 멱등성
+    # 검사(actions_utils.already_sent_today_kst)로 즉시 종료.
+    - cron: '35 23 * * *'  # 08:35 KST (primary)
+    - cron: '5 0 * * *'    # 09:05 KST (backup +30m)
+    - cron: '35 0 * * *'   # 09:35 KST (backup +60m)
+    - cron: '5 1 * * *'    # 10:05 KST (backup +90m)
   workflow_dispatch:
 
 permissions:
@@ -33,6 +38,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 멱등성 검사용 — 오늘 이미 성공 run 이 있는지 GH Actions API 로 조회.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish report to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3

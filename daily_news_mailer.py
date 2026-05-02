@@ -18,6 +18,7 @@ from urllib.parse import quote_plus
 
 import feedparser
 
+from actions_utils import already_sent_today_kst
 from mailer import send_html_email
 from news_utils import strip_source_suffix
 from notifier import send_telegram_message
@@ -195,6 +196,12 @@ def _should_send_telegram() -> bool:
 
 
 def main() -> int:
+    # 멱등성: cron 슬롯이 여러 개라 같은 날 중복 트리거될 수 있다. 이미 오늘
+    # 성공한 run 이 있으면 즉시 종료해 메일·텔레그램 중복 발송을 막는다.
+    if already_sent_today_kst():
+        print("✓ 오늘(KST) 이미 발송 완료 — 종료", file=sys.stderr)
+        return 0
+
     articles = fetch_articles()
     print(f"Fetched {len(articles)} articles", file=sys.stderr)
 
