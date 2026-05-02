@@ -19,6 +19,7 @@ from urllib.parse import quote_plus
 import feedparser
 
 from mailer import send_html_email
+from news_utils import strip_source_suffix
 from notifier import send_telegram_message
 
 KST = timezone(timedelta(hours=9))
@@ -93,12 +94,15 @@ def fetch_articles() -> list[Article]:
                 continue
 
             seen_titles.add(dedup_key)
+            src = _extract_source(entry)
             out.append(
                 Article(
                     category=category,
-                    title=title,
+                    # Google News RSS 가 제목 끝에 " - <출처>"를 붙여 보내므로,
+                    # 출처 컬럼과 중복되지 않게 여기서 한 번 떼어낸다.
+                    title=strip_source_suffix(title, src),
                     url=link,
-                    source=_extract_source(entry),
+                    source=src,
                     published=published.astimezone(KST),
                 )
             )

@@ -30,6 +30,7 @@ import yfinance as yf  # noqa: E402
 
 from mailer import send_html_email  # noqa: E402
 from notifier import send_telegram_message  # noqa: E402
+from news_utils import strip_source_suffix  # noqa: E402
 from summarizer import render_summary_block_html, summarize_titles  # noqa: E402
 
 # Windows 콘솔 한글/이모지 출력을 위한 UTF-8 재설정
@@ -105,7 +106,9 @@ def fetch_news(query: str, limit: int) -> list[dict]:
         source_el = item.find("source")
         source = source_el.text.strip() if source_el is not None and source_el.text else ""
         news.append({
-            "title": title,
+            # Google News RSS 가 제목 끝에 " - <출처>"를 붙여서 보내므로,
+            # 출처 컬럼과 중복되지 않게 여기서 한 번 떼어낸다.
+            "title": strip_source_suffix(title, source),
             "source": source,
             "pub_date": pub_date,
             "link": link,
