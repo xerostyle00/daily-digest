@@ -35,7 +35,8 @@ jobs:
           SEND_TELEGRAM: '1'
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          # Samsung 은 oil/news 와 별도 수신자 — 본인만 받기
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL_SAMSUNG }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
