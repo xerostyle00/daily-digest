@@ -161,7 +161,7 @@ def render_email_html(articles: list[Article]) -> str:
 
 def render_telegram_message(articles: list[Article], today_str: str) -> str:
     """Telegram HTML 메시지: 카테고리별 최신 기사 5건씩."""
-    parts = [f"🗞 <b>일일 AI/GPU 뉴스 ({today_str})</b>", ""]
+    parts = [f"🗞 <b>일일현황: AI/GPU ({today_str})</b>", ""]
 
     by_cat: dict[str, list[Article]] = {}
     for a in articles:
@@ -214,7 +214,7 @@ def main() -> int:
     print(f"🌐 공개본: {PUBLIC_REPORT_PATH}", file=sys.stderr)
 
     # 이메일
-    send_html_email(f"일일 AI/GPU 뉴스 ({today})", html_body)
+    send_html_email(f"일일현황: AI/GPU ({today})", html_body)
     print("📧 이메일 발송 완료", file=sys.stderr)
 
     # 텔레그램 (옵션)

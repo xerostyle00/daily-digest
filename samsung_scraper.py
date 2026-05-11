@@ -616,7 +616,7 @@ def render_telegram_message(latest: list[dict], summary: list[str] | None,
     stats = _stats_from_chart(chart)
     discount = _discount_stats(chart)
 
-    parts = [f"📊 <b>일일 삼성전자 현황 ({today_str})</b>", ""]
+    parts = [f"📊 <b>일일현황: 삼성전자 ({today_str})</b>", ""]
 
     if latest:
         ref_str = (
@@ -794,7 +794,7 @@ def main() -> int:
                 if discount_png:
                     inline[DISCOUNT_CHART_CID] = discount_png
                 send_html_email(
-                    f"일일 삼성전자 현황 ({today})",
+                    f"일일현황: 삼성전자 ({today})",
                     email_html,
                     inline_images=inline or None,
                 )

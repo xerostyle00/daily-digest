@@ -915,7 +915,7 @@ def render_telegram_message(latest: list[dict], summary: list[str] | None,
     """Telegram HTML 메시지: 제목 + 시세 요약 + AI 요약 불릿 + 리포트 링크."""
     stats = _stats_from_chart(chart)
 
-    parts = [f"📈 <b>일일 OIL 현황 ({today_str})</b>", ""]
+    parts = [f"📈 <b>일일현황: OIL ({today_str})</b>", ""]
 
     if latest:
         ref_str = (
@@ -1096,7 +1096,7 @@ def main() -> int:
                     has_chart_image=bool(chart_png),
                 )
                 send_html_email(
-                    f"일일 OIL 현황 ({today})",
+                    f"일일현황: OIL ({today})",
                     html_body,
                     inline_images=inline,
                 )
