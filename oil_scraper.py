@@ -773,7 +773,7 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
     has_chart_image=True 일 때 차트는 <img src="cid:..."> 로 참조 (PNG 인라인 첨부).
     False 면 차트 섹션 자체를 생략.
     """
-    today = datetime.now(KST).strftime("%Y.%m.%d (%a)")
+    today = datetime.now(KST).strftime("%Y.%m.%d")
     stats = _stats_from_chart(chart)
 
     ref_dates = sorted({r["date"] for r in latest if r.get("date")}, reverse=True)
@@ -894,7 +894,7 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
         "BlinkMacSystemFont,'Segoe UI','Malgun Gothic',sans-serif;"
         "max-width:900px;margin:0 auto;padding:16px;color:#202124\">"
         f"<h1 style='border-bottom:2px solid #ffb74d;padding-bottom:8px;margin-bottom:16px'>"
-        f"📈 국제유가 일일 리포트 : {today}</h1>"
+        f"📈 일일현황: OIL ({today})</h1>"
         f"<h2 style='margin-top:24px;font-size:16px;color:#202124'>💹 시세{ref_caption}</h2>"
         f"{prices_section}"
         f"{chart_section}"

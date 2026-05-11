@@ -151,7 +151,7 @@ def render_email_html(articles: list[Article]) -> str:
         "BlinkMacSystemFont,'Segoe UI','Malgun Gothic',sans-serif;"
         "max-width:900px;margin:0 auto;padding:16px;color:#202124\">"
         f"<h1 style='border-bottom:2px solid #1a73e8;padding-bottom:8px'>"
-        f"🗞 일일 AI/GPU 뉴스 ({today})</h1>"
+        f"🗞 일일현황: AI/GPU ({today})</h1>"
         f"{body}"
         "<p style='margin-top:24px;color:#999;font-size:12px;text-align:center'>"
         "Google News RSS · 최근 24시간 · 자동 발송</p>"

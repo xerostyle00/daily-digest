@@ -588,7 +588,7 @@ def render_email_html(latest: list[dict], news: list[dict], chart: dict,
         "BlinkMacSystemFont,'Segoe UI','Malgun Gothic',sans-serif;"
         "max-width:900px;margin:0 auto;padding:16px;color:#202124\">"
         f"<h1 style='border-bottom:2px solid #42a5f5;padding-bottom:8px;margin-bottom:16px'>"
-        f"📊 삼성전자 일일 리포트 : {today}</h1>"
+        f"📊 일일현황: 삼성전자 ({today})</h1>"
         f"<h2 style='margin-top:24px;font-size:16px;color:#202124'>💹 시세{ref_caption}</h2>"
         f"{prices_section}"
         f"{discount_section}"
