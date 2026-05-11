@@ -1,0 +1,51 @@
+name: Daily Samsung Stock Mailer
+
+on:
+  schedule:
+    # GitHub Actions schedule 은 무료 티어에서 6h+ 늦거나 누락되는 경우가 있어,
+    # 16:35 KST(07:35 UTC) 를 기준으로 약 +90분 백업 슬롯을 깔아 가장 먼저
+    # 트리거된 슬롯이 발송하도록 한다. 두 번째 이후 슬롯은 mailer 의 멱등성
+    # 검사(actions_utils.already_sent_today_kst)로 즉시 종료.
+    # KOSPI 15:30 KST 마감 후 약 1시간 버퍼.
+    - cron: '35 7 * * *'   # 16:35 KST (primary)
+    - cron: '5 8 * * *'    # 17:05 KST (backup +30m)
+    - cron: '35 8 * * *'   # 17:35 KST (backup +60m)
+    - cron: '5 9 * * *'    # 18:05 KST (backup +90m)
+  workflow_dispatch:
+
+permissions:
+  contents: write   # gh-pages 브랜치 푸시 권한
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - run: python samsung_scraper.py
+        env:
+          SEND_EMAIL: '1'
+          SEND_TELEGRAM: '1'
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # 멱등성 검사용 — 오늘 이미 성공 run 이 있는지 GH Actions API 로 조회.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish report to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./output/public
+          publish_branch: gh-pages
+          keep_files: true
