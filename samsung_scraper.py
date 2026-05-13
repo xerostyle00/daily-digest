@@ -74,12 +74,22 @@ DISCOUNT_COLOR = "#9c27b0"  # purple
 # ────────────────────────────────────────────────────────────
 
 def fetch_prices() -> list[dict]:
-    """yfinance 로 각 ticker 일별 종가 조회. CHART_DAYS + 여유분 반환."""
+    """yfinance 로 각 ticker 일별 종가 조회. NaN 종가 행은 제외.
+
+    yfinance 는 미정산 거래일(데이터 지연·당일 미마감 등) 에 Close=NaN 을 반환할
+    수 있다. NaN 이 Python sqlite3 driver 에 의해 NULL 로 변환되면 prices.close
+    NOT NULL 제약을 위반해 executemany 가 중간에서 멈추고, 그 뒤 ticker 들은
+    인서트되지 않는 회귀가 생긴다 (samsung_scraper 에서 우선주 누락 사례).
+    """
     rows: list[dict] = []
     for label, ticker in TICKERS.items():
         hist = yf.Ticker(ticker).history(period=f"{CHART_DAYS + 5}d", interval="1d")
         if hist.empty:
             rows.append({"label": label, "ticker": ticker, "error": "no data"})
+            continue
+        hist = hist.dropna(subset=["Close"])
+        if hist.empty:
+            rows.append({"label": label, "ticker": ticker, "error": "all close NaN"})
             continue
         for idx, (ts, r) in enumerate(hist.iterrows()):
             prev_close = float(hist.iloc[idx - 1]["Close"]) if idx > 0 else float(r["Close"])

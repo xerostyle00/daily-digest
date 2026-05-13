@@ -69,12 +69,21 @@ TICKER_COLORS = {
 # ────────────────────────────────────────────────────────────
 
 def fetch_prices() -> list[dict]:
-    """최근 거래일 종가와 전일 대비 등락. CHART_DAYS 만큼의 이력도 함께 반환."""
+    """최근 거래일 종가와 전일 대비 등락. CHART_DAYS 만큼의 이력도 함께 반환.
+
+    yfinance 가 미정산 거래일에 Close=NaN 을 반환하면 sqlite3 binding 시 NULL
+    로 변환되어 prices.close NOT NULL 제약을 위반한다. dropna 로 그 행을 미리
+    제거해 executemany 가 중간에서 멈추는 회귀를 막는다.
+    """
     rows: list[dict] = []
     for label, ticker in TICKERS.items():
         hist = yf.Ticker(ticker).history(period=f"{CHART_DAYS + 5}d", interval="1d")
         if hist.empty:
             rows.append({"label": label, "ticker": ticker, "error": "no data"})
+            continue
+        hist = hist.dropna(subset=["Close"])
+        if hist.empty:
+            rows.append({"label": label, "ticker": ticker, "error": "all close NaN"})
             continue
         for idx, (ts, r) in enumerate(hist.iterrows()):
             prev_close = float(hist.iloc[idx - 1]["Close"]) if idx > 0 else float(r["Close"])
